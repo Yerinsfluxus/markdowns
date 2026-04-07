@@ -5,15 +5,17 @@
 
 ## 1. Account Verification — Two Separate Accounts Confirmed
 
-| | Fatai (migrating from Flux) | Yerin (Riverly owner) |
+| | Fatai (migrating from Flux) | Me — Riverly Account |
 |---|---|---|
 | **AWS Account ID** | `912921195732` | `132597214585` |
-| **IAM User** | `Fatai` | `YERINS` |
+| **IAM User** | `Fatai` | `YERINS` (me, IAM user on Riverly account) |
 | **Region** | `eu-north-1` (Stockholm) | `eu-north-1` (Stockholm) |
 | **RDS Endpoint** | `riverly.cxcqeu66ucvt.eu-north-1.rds.amazonaws.com` | `riverly-staging-db.cjsgayq2obtz.eu-north-1.rds.amazonaws.com` |
 | **Redis** | Redis Cloud (external, free tier) | ElastiCache `riverly-redis.n1kcro...` |
 
 They are **completely separate AWS accounts**. No shared resources, no cross-account billing.
+
+> I (Yerins) am an IAM user on the Riverly AWS account (`132597214585`), not the account owner. Fatai is currently on his own account (`912921195732`) and migrating to ours.
 
 ---
 
@@ -33,7 +35,7 @@ They are **completely separate AWS accounts**. No shared resources, no cross-acc
 | S3 | `lira-documents-storage`, `docs.creovine.com` | minimal |
 | **Estimated Total** | | **~$23–25/month** |
 
-### Yerin's Account (`132597214585`)
+### My Account — Riverly (`132597214585`)
 
 | Resource | Spec | Est. Monthly Cost |
 |---|---|---|
@@ -45,7 +47,7 @@ They are **completely separate AWS accounts**. No shared resources, no cross-acc
 | S3 | `riverly-staging-assets` | minimal |
 | **Estimated Total** | | **~$58–62/month** |
 
-> **Key insight:** Yerin's account costs ~2.5× more than Fatai's, almost entirely due to **ElastiCache** ($24/month) and a **larger Fargate task spec** (2× CPU/RAM). These are the two biggest wins.
+> **Key insight:** My account costs ~2.5× more than Fatai's, almost entirely due to **ElastiCache** ($24/month) and a **larger Fargate task spec** (2× CPU/RAM). These are the two biggest wins.
 
 ---
 
@@ -53,7 +55,7 @@ They are **completely separate AWS accounts**. No shared resources, no cross-acc
 
 ### Priority 1 — High Impact, Low Risk
 
-#### Yerin: Replace ElastiCache with Redis Cloud free tier
+#### My Account: Replace ElastiCache with Redis Cloud free tier
 **Saves ~$24/month**
 
 ElastiCache `cache.t3.micro` costs ~$24/month. Redis Cloud offers a **30MB free tier** which is more than enough for staging (sessions, OTP caching, etc.).
@@ -65,7 +67,7 @@ Steps:
 4. Update the ECS task definition with the new connection string
 5. Delete the ElastiCache cluster
 
-#### Yerin: Right-size ECS Fargate task
+#### My Account: Right-size ECS Fargate task
 **Saves ~$9/month**
 
 Current spec (0.5 vCPU / 1024MB) is double what Fatai's staging runs on. Drop to 0.25 vCPU / 512MB — the API is a lightweight .NET staging app. Can always scale up if needed.
@@ -115,7 +117,7 @@ aws ecr put-lifecycle-policy --repository-name riverly-api --region eu-north-1 \
   }'
 ```
 
-**Yerin's account:** Same command but with `AWS_ACCESS_KEY_ID=AKIAR5X3I5V4RCWKLS4O`
+**My account (Riverly):** Same command but with `AWS_ACCESS_KEY_ID=AKIAR5X3I5V4RCWKLS4O`
 
 #### Both Accounts: Set CloudWatch Log Retention
 **Prevents logs from accumulating indefinitely**
@@ -130,7 +132,7 @@ aws logs put-retention-policy \
   --region eu-north-1
 ```
 
-**Yerin's account:**
+**My account (Riverly):**
 ```bash
 AWS_ACCESS_KEY_ID=AKIAR5X3I5V4RCWKLS4O \
 AWS_SECRET_ACCESS_KEY=... \
@@ -154,7 +156,7 @@ aws rds modify-db-instance \
   --region eu-north-1
 ```
 
-**Yerin's account:**
+**My account (Riverly):**
 ```bash
 aws rds modify-db-instance \
   --db-instance-identifier riverly-staging-db \
@@ -183,7 +185,7 @@ aws ec2 revoke-security-group-ingress \
 
 > Note: After removing this, ECS tasks can still reach RDS because they are in the same VPC/security group. Only external internet access gets blocked.
 
-#### Yerin's Account: Reduce RDS Backup Retention from 7 to 1 Day (for staging)
+#### My Account: Reduce RDS Backup Retention from 7 to 1 Day (for staging)
 **7-day backup retention on staging is unnecessary and adds storage cost**
 
 7 days of automated snapshots for a 20GB staging DB = up to 140GB of snapshot storage billed. For staging, 1 day is sufficient.
@@ -200,7 +202,7 @@ aws rds modify-db-instance \
 
 ## 4. Projected Savings After All Changes
 
-### Yerin's Account
+### My Account (Riverly)
 
 | Change | Monthly Saving |
 |---|---|
@@ -210,7 +212,7 @@ aws rds modify-db-instance \
 | Reduce RDS backup retention (7→1 day) | ~$2–5 |
 | **Total savings** | **~$35–38/month** |
 
-**Yerin's account: $62/month → ~$24/month**
+**My account: $62/month → ~$24/month**
 
 ### Fatai's Account
 
@@ -244,12 +246,12 @@ These are the things that caused high bills on Flux and similar setups:
 
 ## 6. When Fatai Completes Migration to Riverly AWS
 
-When Fatai fully migrates to the Riverly AWS (Yerin's account `132597214585`), make sure:
+When Fatai fully migrates to our Riverly AWS account (`132597214585`), make sure:
 
 1. **One ECR repository** — both share `riverly-api`, use tags to distinguish (e.g. `fatai-sha` vs `yerin-sha`)
 2. **Separate task definitions** — register separate task def families if needed (`riverly-task-fatai`, `riverly-task-yerin`)
 3. **Shared RDS** is fine for staging — use separate databases/schemas within the same RDS instance to save cost
-4. **IAM** — Fatai already exists as a user in Yerin's account (`132597214585`). Assign him least-privilege permissions (ECS + ECR + RDS read, no billing/IAM access)
+4. **IAM** — Fatai already exists as a user in our account (`132597214585`). Assign him least-privilege permissions (ECS + ECR + RDS read, no billing/IAM access)
 5. **Delete Fatai's separate AWS account** (`912921195732`) once fully migrated — or at minimum, delete all running resources (RDS, ECS service) to stop billing
 
 ---
@@ -257,12 +259,12 @@ When Fatai fully migrates to the Riverly AWS (Yerin's account `132597214585`), m
 ## 7. Summary Checklist
 
 ### Immediate Actions (Do Now)
-- [ ] Yerin: Delete ElastiCache, switch to Redis Cloud free tier
-- [ ] Yerin: Reduce ECS task from 0.5 vCPU/1GB → 0.25 vCPU/512MB
-- [ ] Yerin: Set CloudWatch log retention to 30 days (`/ecs/riverly-api`)
-- [ ] Yerin: Change RDS `riverly-staging-db` from gp2 → gp3
-- [ ] Yerin: Reduce RDS backup retention from 7 → 1 day
-- [ ] Yerin: Add ECR lifecycle policy (keep 10 tagged, delete untagged after 1 day)
+- [ ] My account: Delete ElastiCache, switch to Redis Cloud free tier
+- [ ] My account: Reduce ECS task from 0.5 vCPU/1GB → 0.25 vCPU/512MB
+- [ ] My account: Set CloudWatch log retention to 30 days (`/ecs/riverly-api`)
+- [ ] My account: Change RDS `riverly-staging-db` from gp2 → gp3
+- [ ] My account: Reduce RDS backup retention from 7 → 1 day
+- [ ] My account: Add ECR lifecycle policy (keep 10 tagged, delete untagged after 1 day)
 - [ ] Fatai: Fix security group — close port 5432 to `0.0.0.0/0`
 - [ ] Fatai: Set CloudWatch log retention to 30 days (`/ecs/riverly-task`)
 - [ ] Fatai: Change RDS `riverly` from gp2 → gp3

@@ -1,7 +1,7 @@
 # Riverly API — Frontend Reference
 > Base URL: `https://riverly-api-staging.duckdns.org`
 > Interactive docs: `https://riverly-api-staging.duckdns.org/swagger`
-> Last updated: April 9, 2026
+> Last updated: April 10, 2026
 
 ---
 
@@ -236,6 +236,8 @@ Get user profile. No auth required on the route but needs a valid JWT to return 
 ### POST `/api/v1/auth/biometric/enable`
 🔒 **Requires auth.** Register device for biometric login.
 
+> **How this works:** The actual Face ID / fingerprint scan happens **on the device** using iOS/Android native APIs. The backend never receives biometric data. Instead, after the user authenticates natively, the app calls this endpoint to register the device and receive a `biometricToken`. Store that token securely on-device (e.g. Keychain / Keystore). No third-party service is involved.
+
 **Request:**
 ```json
 {
@@ -247,7 +249,7 @@ Get user profile. No auth required on the route but needs a valid JWT to return 
 ```json
 {
   "deviceId": "uuid",
-  "biometricToken": "..."    // store this token on-device for biometric login
+  "biometricToken": "..."    // store this token securely on-device (Keychain / Keystore)
 }
 ```
 
@@ -255,6 +257,8 @@ Get user profile. No auth required on the route but needs a valid JWT to return 
 
 ### POST `/api/v1/auth/biometric/login`
 Login using stored biometric token. Device headers required.
+
+> **Flow:** Prompt the user for Face ID / fingerprint natively → on success, send the stored `biometricToken` to this endpoint → receive a new JWT. The backend validates the token against the registered device — it never sees the biometric itself.
 
 **Request:**
 ```json
@@ -407,10 +411,12 @@ Step 7 — Set login passcode. 🔒 Requires auth.
 ### POST `/api/v1/onboarding/liveness/check`
 Step 8 — Facial liveness check. 🔒 Requires auth.
 
+> **How this works:** This is **identity liveness** — not device biometrics. The app captures a selfie from the camera and sends it as a base64 string. The backend forwards it to **Dojah** (third-party KYC provider) which checks that the image is a real, live human face (anti-spoofing). This is completely separate from the biometric login system above — it only happens once during onboarding to confirm the user is a real person matching their ID documents.
+
 **Request:**
 ```json
 {
-  "image": "base64encodedstring..."    // base64-encoded image from camera
+  "image": "base64encodedstring..."    // base64-encoded selfie from camera (not a stored biometric)
 }
 ```
 

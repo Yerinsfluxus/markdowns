@@ -5,6 +5,46 @@
 
 ---
 
+## Table of Contents
+
+### Basics
+- [Global Conventions](#global-conventions) — response format, auth header, rate limits, device headers
+
+### Endpoints (what to send, what you get back)
+- [1. Auth](#1-auth--apiv1auth) — login, logout, refresh token, passcode reset, biometric, profile
+- [2. Onboarding](#2-onboarding--apiv1onboarding) — signup steps: phone → email → BVN/NIN → profile → passcode → selfie
+- [3. Accounts](#3-accounts--apiv1accounts) — create account, get balances, set/change PIN
+- [4. Transactions](#4-transactions--apiv1accountsaccountidtransactions) — transaction history, filters, detail view
+- [5. Transfers](#5-transfers--apiv1transfers) — send money to another Riverly account
+- [6. Beneficiaries](#6-beneficiaries--apiv1beneficiaries) — save, edit, delete saved recipients
+- [7. Bill Payments](#7-bill-payments--apiv1payments) — airtime, data, electricity, cable TV
+- [8. KYC](#8-kyc--apiv1kyc) — document upload, submit for review
+- [9. Dashboard](#9-dashboard--apiv1dashboard) — home screen data
+- [10. Statements](#10-statements--apiv1statements) — request bank statements
+- [11. Notifications](#11-notifications--apiv1notifications) — push tokens, preferences
+- [12. Chat](#12-chat--apiv1chat) — support chat
+- [13. Support](#13-support--apiv1support) — contact info
+
+### Step-by-Step Flows (what to call and when)
+- [Onboarding Flow](#flow-onboarding-new-user-signup) — full signup from phone number to selfie
+- [Login Flow](#flow-login-existing-user) — passcode login + new device verification
+- [Biometric Login Flow](#flow-biometric-login-app-launch) — Face ID / fingerprint login on app open
+- [Buy Airtime Flow](#flow-buy-airtime) — select network → enter amount → PIN → receipt
+- [Buy Data Flow](#flow-buy-data) — select network → pick plan → PIN → receipt
+- [Pay Bill Flow](#flow-pay-bill-electricity-cable-tv-etc) — categories → biller → validate → PIN → receipt
+- [Transfer Flow](#flow-transfer-to-riverly-account-internal) — enter account → confirm → PIN → receipt
+- [Transaction History Flow](#flow-view-transaction-history) — list, filter, detail
+- [Forgot Passcode Flow](#flow-forgot-passcode) — OTP → reset token → new passcode
+- [KYC Upload Flow](#flow-kyc-document-upload-post-onboarding-tier-upgrade) — upload docs → submit
+- [Dashboard Flow](#flow-dashboard-home-screen) — what to load on home screen
+- [Bank Statement Flow](#flow-request-bank-statement) — request → poll → download
+- [Beneficiaries Flow](#flow-manage-beneficiaries) — add, edit, delete saved recipients
+
+### Quick Reference
+- [Field Names to Watch](#quick-reference--field-names-to-watch) — common mistakes and correct field names
+
+---
+
 ## Global Conventions
 
 ### Every response has this wrapper:
@@ -43,6 +83,7 @@ X-Device-Os: "iOS 17.1"                                 ← optional
 ---
 
 ## 1. Auth — `/api/v1/auth`
+> Login, logout, password reset, biometric login, and user profile.
 
 ### POST `/api/v1/auth/login`
 Login with passcode. Device headers required.
@@ -236,20 +277,20 @@ Get user profile. No auth required on the route but needs a valid JWT to return 
 ### POST `/api/v1/auth/biometric/enable`
 🔒 **Requires auth.** Register device for biometric login.
 
-> **How this works:** The actual Face ID / fingerprint scan happens **on the device** using iOS/Android native APIs. The backend never receives biometric data. Instead, after the user authenticates natively, the app calls this endpoint to register the device and receive a `biometricToken`. Store that token securely on-device (e.g. Keychain / Keystore). No third-party service is involved.
+> The backend never sees the user's face or fingerprint. What happens: the user does Face ID / fingerprint on their phone → if it passes, you call this endpoint → backend gives you a `biometricToken` → save it securely (Keychain on iOS, Keystore on Android). That token is what you send later to log in.
 
 **Request:**
 ```json
 {
-  "deviceId": "uuid-of-device"
+  "deviceId": "uuid-of-device"        // use the SAME X-Device-Id you send in headers
 }
 ```
 
 **Response `data`:**
 ```json
 {
-  "deviceId": "uuid",
-  "biometricToken": "..."    // store this token securely on-device (Keychain / Keystore)
+  "deviceId": "uuid-of-device",       // same value you sent — confirmation only
+  "biometricToken": "..."             // store this securely in Keychain / Keystore
 }
 ```
 
@@ -258,13 +299,23 @@ Get user profile. No auth required on the route but needs a valid JWT to return 
 ### POST `/api/v1/auth/biometric/login`
 Login using stored biometric token. Device headers required.
 
-> **Flow:** Prompt the user for Face ID / fingerprint natively → on success, send the stored `biometricToken` to this endpoint → receive a new JWT. The backend validates the token against the registered device — it never sees the biometric itself.
-
 **Request:**
 ```json
 {
-  "deviceId": "guid",
-  "biometricToken": "..."
+  "deviceId": "uuid-of-device",       // same X-Device-Id used during enable
+  "biometricToken": "..."             // the token stored from enable response
+}
+```
+
+**Response `data`:**
+```json
+{
+  "accessToken": "eyJ...",
+  "refreshToken": "...",
+  "userId": "guid",
+  "name": "Fatai Sanni",
+  "phoneNumber": "+2348012345678",
+  "onboardingStep": "completed"
 }
 ```
 
@@ -275,6 +326,45 @@ Login using stored biometric token. Device headers required.
 
 ### POST `/api/v1/auth/biometric/disable`
 🔒 **Requires auth.** Revoke biometric for current user.
+
+---
+
+### Biometric Flow Guide (for frontend)
+
+**Step A — Enable biometric (Settings screen, after user is logged in):**
+```
+1. User taps "Enable Face ID" or "Enable Fingerprint" in app settings
+2. Trigger native biometric prompt (FaceID / TouchID / Android BiometricPrompt)
+3. If native prompt succeeds:
+     POST /api/v1/auth/biometric/enable
+     Headers: Authorization: Bearer <accessToken>
+     Body:    { "deviceId": "<your X-Device-Id>" }
+4. Store the response biometricToken securely:
+     - iOS: Keychain
+     - Android: EncryptedSharedPreferences or Keystore
+5. Also store a flag locally: biometricEnabled = true
+```
+
+**Step B — Biometric login (app launch, when biometric is enabled):**
+```
+1. Check local storage: is biometricEnabled == true and biometricToken exists?
+2. If yes, trigger native biometric prompt (FaceID / TouchID / fingerprint)
+3. If native prompt succeeds:
+     POST /api/v1/auth/biometric/login
+     Headers: X-Device-Id: <your device UUID>
+     Body:    { "deviceId": "<same X-Device-Id>", "biometricToken": "<stored token>" }
+4. Response contains accessToken + refreshToken — user is logged in
+```
+
+**Edge cases to handle:**
+| Scenario | What happens | Frontend action |
+|----------|-------------|-----------------|
+| Token expired (90 days) | `"Biometric session expired"` | Clear stored token, show passcode login |
+| App reinstalled (new X-Device-Id) | Old token is orphaned | User must log in with passcode, re-enable biometric |
+| User disabled biometric | `/biometric/login` returns error | Clear stored token, show passcode login |
+| Native prompt fails/cancelled | No API call needed | Show passcode login as fallback |
+
+**Important:** The `deviceId` in the request body must be the **exact same string** as your `X-Device-Id` header. Generate it once on first install and persist it.
 
 ### POST `/api/v1/auth/device/revoke`
 🔒 **Requires auth.** Revoke a specific device session.
@@ -290,7 +380,8 @@ Login using stored biometric token. Device headers required.
 
 ## 2. Onboarding — `/api/v1/onboarding`
 
-> Step order: Phone → Verify Phone → Email → Verify Email → Identity → Profile → Passcode → Liveness
+> New user signup — 8 steps in order. The user must complete each step before moving to the next.
+> **Step order:** Phone → Verify Phone → Email → Verify Email → BVN/NIN → Profile → Passcode → Selfie
 
 ### POST `/api/v1/onboarding/phone/initiate`
 Step 1 — Start signup with phone number. Sends OTP.
@@ -367,6 +458,8 @@ Resend OTP for phone or email.
 ### POST `/api/v1/onboarding/identity/verify`
 Step 5 — BVN or NIN verification. 🔒 Requires auth.
 
+> Send at least one (BVN or NIN). You can send both. The backend verifies them automatically.
+
 **Request:**
 ```json
 {
@@ -409,9 +502,9 @@ Step 7 — Set login passcode. 🔒 Requires auth.
 ---
 
 ### POST `/api/v1/onboarding/liveness/check`
-Step 8 — Facial liveness check. 🔒 Requires auth.
+Step 8 — Selfie verification. 🔒 Requires auth.
 
-> **How this works:** This is **identity liveness** — not device biometrics. The app captures a selfie from the camera and sends it as a base64 string. The backend forwards it to **Dojah** (third-party KYC provider) which checks that the image is a real, live human face (anti-spoofing). This is completely separate from the biometric login system above — it only happens once during onboarding to confirm the user is a real person matching their ID documents.
+> Open the camera, take a selfie, convert it to a base64 string, and send it. The backend checks if it's a real person (not a photo of a photo). This only happens once during signup — it's **not** the same as Face ID login.
 
 **Request:**
 ```json
@@ -423,6 +516,8 @@ Step 8 — Facial liveness check. 🔒 Requires auth.
 ---
 
 ## 3. Accounts — `/api/v1/accounts`
+> Create accounts, check balances, manage transaction PIN.
+
 🔒 All endpoints require auth.
 
 ### POST `/api/v1/accounts`
@@ -507,6 +602,8 @@ Verify transaction PIN before a transaction.
 ---
 
 ## 4. Transactions — `/api/v1/accounts/{accountId}/transactions`
+> View transaction history with filters, pagination, and detail view.
+
 🔒 All endpoints require auth.
 
 ### GET `/api/v1/accounts/{accountId}/transactions`
@@ -552,6 +649,8 @@ Look up any transaction by reference string.
 ---
 
 ## 5. Transfers — `/api/v1/transfers`
+> Send money to another Riverly account.
+
 🔒 All endpoints require auth.
 
 ### GET `/api/v1/transfers/internal-lookup/{accountNumber}`
@@ -584,6 +683,8 @@ Get transfer receipt by reference.
 ---
 
 ## 6. Beneficiaries — `/api/v1/beneficiaries`
+> Saved recipients — so users don't re-enter account details every time.
+
 🔒 All endpoints require auth.
 
 ### GET `/api/v1/beneficiaries/banks`
@@ -645,6 +746,8 @@ Remove a beneficiary (soft delete).
 ---
 
 ## 7. Bill Payments — `/api/v1/payments`
+> Buy airtime, data bundles, pay electricity, cable TV, and other bills.
+
 🔒 All endpoints require auth.
 
 ### GET `/api/v1/payments/data/plans/{networkProvider}`
@@ -722,6 +825,8 @@ Get receipts by transaction reference.
 ---
 
 ## 8. KYC — `/api/v1/kyc`
+> Account upgrade — user uploads identity documents for verification.
+
 🔒 All endpoints require auth.
 
 ### POST `/api/v1/kyc/documents/upload`
@@ -852,6 +957,410 @@ Close a chat session.
 
 ### GET `/api/v1/support/contact`
 Get customer support contact options (phone, email, etc.).
+
+---
+
+## 14. Frontend Flow Guides — Screen-by-Screen
+
+> **Start here if you want to know "what do I call and when?"**
+> Each flow shows the exact screens and API calls in order, from when the user taps something to when the action is complete.
+
+---
+
+### Flow: Onboarding (new user signup)
+```
+Screen: Welcome → "Sign Up"
+  │
+  ├─ 1. Phone number input screen
+  │     User enters phone → POST /api/v1/onboarding/phone/initiate
+  │     Body: { "phoneNumber": "+234...", "referralCode": "ABC123" }  ← referralCode optional
+  │
+  ├─ 2. OTP verification screen
+  │     User enters 6-digit code → POST /api/v1/onboarding/phone/verify
+  │     Body: { "target": "+234...", "code": "123456" }
+  │     ✅ Response gives you an accessToken — use it for ALL remaining steps
+  │     ✅ Response gives onboardingStep — tells you which screen to show next
+  │     ⚠️  If OTP expired: user taps "Resend" → POST /api/v1/onboarding/resend-otp
+  │
+  ├─ 3. Email input screen
+  │     User enters email → POST /api/v1/onboarding/email/submit
+  │     Body: { "email": "user@example.com" }
+  │
+  ├─ 4. Email OTP verification screen
+  │     User enters code → POST /api/v1/onboarding/email/verify
+  │     Body: { "target": "user@example.com", "code": "123456" }
+  │
+  ├─ 5. Identity verification screen (BVN/NIN)
+  │     User enters BVN and/or NIN → POST /api/v1/onboarding/identity/verify
+  │     Body: { "bvn": "12345678901", "nin": "12345678901" }
+  │     ⚠️  At least one is required. Backend verifies via Dojah.
+  │
+  ├─ 6. Profile details screen
+  │     User fills form → POST /api/v1/onboarding/profile/update
+  │     Body: { "state", "lga", "area", "address", "zipCode", "profession", "annualIncomeRange" }
+  │
+  ├─ 7. Set passcode screen
+  │     User enters 6-digit passcode twice → POST /api/v1/onboarding/passcode/set
+  │     Body: { "passcode": "123456", "confirmPasscode": "123456" }
+  │
+  └─ 8. Liveness check screen (selfie)
+        Open camera → capture selfie → convert to base64
+        POST /api/v1/onboarding/liveness/check
+        Body: { "image": "base64string..." }
+        ✅ Onboarding complete → navigate to Dashboard
+```
+
+---
+
+### Flow: Login (existing user)
+```
+Screen: Welcome → "Log In"
+  │
+  ├─ 1. Login screen
+  │     User enters phone/email + passcode
+  │     POST /api/v1/auth/login
+  │     Headers: X-Device-Id required
+  │     Body: { "identifier": "+234...", "passcode": "123456" }
+  │
+  ├─ Response A: deviceVerificationRequired == false
+  │     ✅ Login success → save accessToken + refreshToken → go to Dashboard
+  │
+  └─ Response B: deviceVerificationRequired == true (new/unrecognised device)
+        │
+        ├─ 2. Backend already sent OTP to user's phone
+        │     Show OTP input screen
+        │     POST /api/v1/auth/login/verify-device
+        │     Body: { "userId": "<from response>", "otpCode": "123456" }
+        │
+        └─ ✅ Device verified → save tokens → go to Dashboard
+```
+
+---
+
+### Flow: Biometric Login (app launch)
+```
+App opens → check local storage
+  │
+  ├─ biometricEnabled == true AND biometricToken exists?
+  │     YES → show biometric prompt (Face ID / fingerprint)
+  │       │
+  │       ├─ Native prompt succeeds:
+  │       │     POST /api/v1/auth/biometric/login
+  │       │     Headers: X-Device-Id
+  │       │     Body: { "deviceId": "<X-Device-Id>", "biometricToken": "<stored>" }
+  │       │     ✅ Save new tokens → go to Dashboard
+  │       │
+  │       └─ Native prompt fails/cancelled:
+  │             Show passcode login screen (fallback)
+  │
+  └─ NO → show normal passcode login screen
+```
+
+---
+
+### Flow: Buy Airtime
+```
+Dashboard → "Pay Bills" or "Airtime" category
+  │
+  ├─ 1. Airtime form screen
+  │     Show form: phone number, network provider dropdown, amount input
+  │     Network options: mtn | glo | airtel | 9mobile  ← hardcoded in app
+  │     ⚠️  No API call needed yet — this is just a form
+  │
+  ├─ 2. User fills form → taps "Continue"
+  │     Show confirmation screen with summary:
+  │       Phone: +234...
+  │       Network: MTN
+  │       Amount: ₦1,000
+  │       Source account: from GET /api/v1/accounts (pick default or let user choose)
+  │
+  ├─ 3. User confirms → show PIN input
+  │     User enters 4-digit transaction PIN
+  │
+  ├─ 4. Submit purchase
+  │     POST /api/v1/payments/airtime
+  │     Body: {
+  │       "accountId": "<selected account guid>",
+  │       "phoneNumber": "+234...",
+  │       "networkProvider": "mtn",
+  │       "amount": 1000,
+  │       "transactionPin": "1234",
+  │       "idempotencyKey": "<generate new UUID>"
+  │     }
+  │
+  └─ 5. Receipt screen
+        ✅ On success → show receipt from response
+        OR fetch: GET /api/v1/payments/airtime/{reference}/receipt
+```
+
+---
+
+### Flow: Buy Data
+```
+Dashboard → "Pay Bills" or "Data" category
+  │
+  ├─ 1. Select network screen
+  │     User picks: mtn | glo | airtel | 9mobile
+  │
+  ├─ 2. Fetch available plans
+  │     GET /api/v1/payments/data/plans/{networkProvider}
+  │     Example: GET /api/v1/payments/data/plans/mtn
+  │     ✅ Response: list of plans with planId, name, amount
+  │     Show plans as selectable cards/list
+  │
+  ├─ 3. User picks a plan + enters phone number → taps "Continue"
+  │     Show confirmation screen:
+  │       Phone: +234...
+  │       Plan: MTN 1GB - 30 days
+  │       Amount: ₦2,000
+  │       Source account: from GET /api/v1/accounts
+  │
+  ├─ 4. User confirms → show PIN input
+  │     User enters 4-digit transaction PIN
+  │
+  ├─ 5. Submit purchase
+  │     POST /api/v1/payments/data
+  │     Body: {
+  │       "accountId": "<guid>",
+  │       "phoneNumber": "+234...",
+  │       "networkProvider": "mtn",
+  │       "planId": "<from plans list>",
+  │       "amount": 2000,
+  │       "transactionPin": "1234",
+  │       "idempotencyKey": "<new UUID>"
+  │     }
+  │
+  └─ 6. Receipt screen
+        GET /api/v1/payments/data/{reference}/receipt
+```
+
+---
+
+### Flow: Pay Bill (Electricity, Cable TV, etc.)
+```
+Dashboard → "Pay Bills"
+  │
+  ├─ 1. Show bill categories
+  │     GET /api/v1/payments/bills/categories
+  │     ✅ Response: list of categories (electricity, cable TV, internet, etc.)
+  │     Show as grid or list
+  │
+  ├─ 2. User taps a category (e.g. "Electricity")
+  │     GET /api/v1/payments/bills/electricity   ← the category slug
+  │     ✅ Response: list of billers (IKEDC, EKEDC, AEDC, etc.)
+  │     Show as selectable list
+  │
+  ├─ 3. User picks a biller → enters customer reference
+  │     (meter number, smartcard number, etc.)
+  │     Tap "Validate" →
+  │     POST /api/v1/payments/bills/validate
+  │     Body: { "billerId": "IKEDC", "customerReference": "45062000001" }
+  │     ✅ Response: customer name + validated details
+  │     Show: "Customer: JOHN DOE — Meter: 45062000001"
+  │     ⚠️  If validation fails, show error — don't proceed
+  │
+  ├─ 4. User enters amount (+ selects bouquet for cable TV if applicable)
+  │     Show confirmation:
+  │       Biller: IKEDC
+  │       Customer: JOHN DOE
+  │       Amount: ₦5,000
+  │       Source account: from GET /api/v1/accounts
+  │
+  ├─ 5. User confirms → PIN input → submit
+  │     POST /api/v1/payments/bills/pay
+  │     Body: {
+  │       "accountId": "<guid>",
+  │       "billerId": "IKEDC",
+  │       "customerReference": "45062000001",
+  │       "amount": 5000,
+  │       "transactionPin": "1234",
+  │       "idempotencyKey": "<new UUID>",
+  │       "billerPlanId": null           ← only for cable TV bouquets
+  │     }
+  │
+  └─ 6. Receipt screen
+        GET /api/v1/payments/bills/{reference}/receipt
+```
+
+---
+
+### Flow: Transfer to Riverly Account (Internal)
+```
+Dashboard → "Transfer" → "To Riverly Account"
+  │
+  ├─ 1. Enter recipient account number
+  │     User types account number →
+  │     GET /api/v1/transfers/internal-lookup/{accountNumber}
+  │     ✅ Response: account name + number
+  │     Show: "FATAI SANNI — 0123456789"
+  │     ⚠️  If not found, show "Account not found"
+  │
+  ├─ 2. User enters amount + narration → taps "Continue"
+  │     Show confirmation:
+  │       To: FATAI SANNI — 0123456789
+  │       Amount: ₦5,000
+  │       Narration: Rent payment
+  │       From: your account (from GET /api/v1/accounts)
+  │
+  ├─ 3. User confirms → PIN input → submit
+  │     POST /api/v1/transfers/internal
+  │     Body: {
+  │       "sourceAccountId": "<guid>",
+  │       "destinationAccountNumber": "0123456789",
+  │       "amount": 5000.00,
+  │       "narration": "Rent payment",
+  │       "transactionPin": "1234",
+  │       "idempotencyKey": "<new UUID>"
+  │     }
+  │
+  ├─ 4. Receipt screen
+  │     GET /api/v1/transfers/receipt/{reference}
+  │
+  └─ 5. Optional: "Save as beneficiary?" prompt
+        POST /api/v1/beneficiaries
+        Body: { "accountNumber": "0123456789", "bankCode": "riverly", "nickname": "Fatai" }
+```
+
+---
+
+### Flow: View Transaction History
+```
+Dashboard → tap account card or "Transactions"
+  │
+  ├─ 1. Load transactions
+  │     GET /api/v1/accounts/{accountId}/transactions?page=1&pageSize=20
+  │     ✅ Show list of transactions (paginated)
+  │
+  ├─ 2. User scrolls down → load more
+  │     GET /api/v1/accounts/{accountId}/transactions?page=2&pageSize=20
+  │     Append to list (infinite scroll)
+  │
+  ├─ 3. User taps filter icon → filter options
+  │     Add query params: ?type=debit&dateFrom=2026-01-01&dateTo=2026-04-01
+  │
+  └─ 4. User taps a transaction → detail screen
+        GET /api/v1/accounts/{accountId}/transactions/{transactionId}
+        Show full receipt / detail view
+```
+
+---
+
+### Flow: Forgot Passcode
+```
+Login screen → "Forgot Passcode?"
+  │
+  ├─ 1. Enter phone/email
+  │     POST /api/v1/auth/passcode/forgot
+  │     Body: { "identifier": "+234..." }
+  │
+  ├─ 2. OTP input screen
+  │     POST /api/v1/auth/passcode/verify-otp
+  │     Body: { "identifier": "+234...", "otpCode": "123456" }
+  │     ✅ Response: { "resetToken": "..." }
+  │
+  └─ 3. New passcode screen
+        User enters new 6-digit passcode twice
+        POST /api/v1/auth/passcode/reset
+        Body: {
+          "identifier": "+234...",
+          "resetToken": "<from step 2>",
+          "newPasscode": "654321",
+          "confirmNewPasscode": "654321"
+        }
+        ✅ Success → navigate to login screen
+```
+
+---
+
+### Flow: KYC Document Upload (post-onboarding tier upgrade)
+```
+Settings → "Upgrade Account" or Dashboard KYC banner
+  │
+  ├─ 1. Check current KYC status
+  │     GET /api/v1/kyc/status
+  │     Shows current tier + what's needed for upgrade
+  │
+  ├─ 2. Document upload screen (can upload multiple)
+  │     For each document:
+  │       POST /api/v1/kyc/documents/upload
+  │       Content-Type: multipart/form-data
+  │       Fields: File, DocumentType, Side (front/back)
+  │       ⚠️  Max 5 MB per file
+  │
+  └─ 3. Submit for review
+        POST /api/v1/kyc/submit
+        ✅ KYC is now "pending review" — check status later with GET /api/v1/kyc/status
+```
+
+---
+
+### Flow: Dashboard (home screen)
+```
+After login / app launch (authenticated)
+  │
+  ├─ 1. Load dashboard
+  │     GET /api/v1/dashboard
+  │     ✅ Returns: accounts, balances, recent transactions, KYC status
+  │     ⚠️  Cached 30 seconds per user — safe to call on every app foreground
+  │
+  ├─ 2. Quick actions from dashboard:
+  │     "Transfer" → Transfer flow
+  │     "Airtime"  → Airtime flow
+  │     "Data"     → Data flow
+  │     "Pay Bill" → Bill payment flow
+  │
+  └─ 3. Pull to refresh → call GET /api/v1/dashboard again
+```
+
+---
+
+### Flow: Request Bank Statement
+```
+Settings → "Statements" or Account → "Statement"
+  │
+  ├─ 1. Statement request form
+  │     User picks: account, date range, delivery method (Download or Email)
+  │     POST /api/v1/statements/request
+  │     Body: {
+  │       "accountId": "<guid>",
+  │       "dateFrom": "2026-01-01T00:00:00Z",
+  │       "dateTo": "2026-04-01T00:00:00Z",
+  │       "delivery": "Download"
+  │     }
+  │     ✅ Response: { "requestId": "..." }
+  │
+  └─ 2. Check status / download
+        GET /api/v1/statements/{requestId}/status
+        ⚠️  Statement is generated async — poll every few seconds or show "Processing..."
+        When ready: response includes download URL
+```
+
+---
+
+### Flow: Manage Beneficiaries
+```
+Transfer screen → "Beneficiaries" or Settings → "Saved Beneficiaries"
+  │
+  ├─ 1. List beneficiaries
+  │     GET /api/v1/beneficiaries?page=1&pageSize=20
+  │     Optional filters: ?search=ahmed&type=internal&isFavorite=true
+  │
+  ├─ 2. Add new beneficiary
+  │     a. Get bank list → GET /api/v1/beneficiaries/banks
+  │     b. User enters account number + picks bank
+  │     c. Validate → POST /api/v1/beneficiaries/validate
+  │        Body: { "accountNumber": "0123456789", "bankCode": "058" }
+  │        ✅ Shows account name
+  │     d. Save → POST /api/v1/beneficiaries
+  │        Body: { "accountNumber": "...", "bankCode": "058", "nickname": "Ahmed GTB" }
+  │
+  ├─ 3. Edit beneficiary
+  │     PATCH /api/v1/beneficiaries/{beneficiaryId}
+  │     Body: { "nickname": "New name", "isFavorite": true }
+  │
+  └─ 4. Delete beneficiary
+        DELETE /api/v1/beneficiaries/{beneficiaryId}
+```
 
 ---
 
